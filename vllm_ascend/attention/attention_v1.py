@@ -1205,7 +1205,26 @@ class AscendAttentionBackendImpl(AttentionImpl):
             graph_params.handles[num_tokens].append(handle)
             return output
 
+    @staticmethod
+    def _unwrap_kv_cache(kv_cache):
+        # The DSV4 kv-cache binding path (model_runner_v1.py DSV4 branch) wraps
+        # every layer's cache as `[kv_cache]`. For standard (k, v) layers that
+        # yields `[(k_cache, v_cache)]` — a len-1 list wrapping a 2-tuple — which
+        # the lazy-init/unpack logic below (expecting a flat `(k, v)` or a
+        # `shape[0] == 2` tensor) cannot unpack, so key_cache stays None and FIA
+        # raises. Flatten the singly-wrapped 2-tuple back to `(k, v)`. MLA layers
+        # use a separate backend (mla_v1.py) and never reach here.
+        if (
+            isinstance(kv_cache, (list, tuple))
+            and len(kv_cache) == 1
+            and isinstance(kv_cache[0], (list, tuple))
+            and len(kv_cache[0]) == 2
+        ):
+            return kv_cache[0]
+        return kv_cache
+
     def _get_fia_params(self, key: torch.Tensor, value: torch.Tensor, attn_metadata: AscendMetadata, kv_cache=None):
+        kv_cache = self._unwrap_kv_cache(kv_cache)
         # PrefillNoCache doesn't need key_cache, but other modes do
         # Only initialize/require cache for modes that actually use it
         if attn_metadata.attn_state != AscendAttentionState.PrefillNoCache:
@@ -1535,6 +1554,7 @@ class AscendAttentionBackendImpl(AttentionImpl):
         if self.attn_type in (AttentionType.ENCODER_ONLY):
             return
 
+        kv_cache = self._unwrap_kv_cache(kv_cache)
         if self.key_cache is None:
             self.key_cache, self.value_cache = kv_cache[0], kv_cache[1]
 
@@ -1555,6 +1575,7 @@ class AscendAttentionBackendImpl(AttentionImpl):
         attn_metadata: AscendMetadata,
         output: torch.Tensor,
     ):
+        kv_cache = self._unwrap_kv_cache(kv_cache)
         if len(kv_cache) > 1:
             if self.key_cache is None:
                 self.key_cache, self.value_cache = kv_cache[0], kv_cache[1]
@@ -1639,6 +1660,7 @@ class AscendAttentionBackendImpl(AttentionImpl):
         # Initialize key_cache and value_cache from kv_cache if not already set.
         # This is needed for DecodeOnly mode where key/value are None but we still
         # need access to the cache for attention computation.
+        kv_cache = self._unwrap_kv_cache(kv_cache)
         if self.key_cache is None and kv_cache is not None:
             if (
                 isinstance(kv_cache, torch.Tensor)
@@ -2086,6 +2108,7 @@ class AscendC8AttentionBackendImpl(AscendAttentionBackendImpl):
         attn_metadata: AscendMetadata,
         output: torch.Tensor,
     ):
+        kv_cache = self._unwrap_kv_cache(kv_cache)
         if len(kv_cache) > 1:
             if self.key_cache is None:
                 self.key_cache, self.value_cache = kv_cache[0], kv_cache[1]

@@ -52,7 +52,24 @@ class PreVwnLayerV1(nn.Module):
 
 class VwnLlamaDecoderLayer(Eagle3LlamaDecoderLayer):
     def __init__(self, vllm_config, prefix="", config=None, layer_idx=0):
-        super().__init__(vllm_config, prefix=prefix, config=config, layer_idx=layer_idx)
+        # Clear sliding_window on cache_config before creating attention layers
+        # to avoid the drafter inheriting the verifier's sliding_window (DSV4=128).
+        # The VWN draft model uses standard (non-MLA) attention and must use full
+        # causal attention (sparse_mode=3), NOT sliding window (sparse_mode=4):
+        # Ascend's aclnnFusedInferAttentionScoreV3 rejects sliding window for plain
+        # attention (error 561002) and under CANN 9.1 this surfaces as a pure kernel
+        # hang with no error during warmup. The verifier avoids this via its custom
+        # DSA/AscendSlidingWindowMLASpec path; the draft has none.
+        # NOTE: this was present in vllm 0.23 (vwn_archive_20260817) but lost when
+        # rebasing vllm-ascend onto main for the 0.26+CANN9.1 upgrade — it was a
+        # working-tree edit, not in the reapply .patch set. Restored 2026-08-19.
+        cache_config = vllm_config.cache_config
+        orig_sliding_window = cache_config.sliding_window
+        cache_config.sliding_window = None
+        try:
+            super().__init__(vllm_config, prefix=prefix, config=config, layer_idx=layer_idx)
+        finally:
+            cache_config.sliding_window = orig_sliding_window
         cfg = config or vllm_config.model_config.hf_config
         qc = self.get_quant_config(vllm_config)
         m, r = getattr(cfg, "vwn_m", 1), getattr(cfg, "vwn_r", 1)

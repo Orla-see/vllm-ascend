@@ -159,6 +159,15 @@ class AscendSpecDecodeBaseProposer(SpecDecodeBaseProposer):
         draft_hf_config = draft_model_config.hf_config if draft_model_config is not None else None
         self._share_mtp_indices = getattr(draft_hf_config, "index_share_for_mtp_iteration", False)
 
+        # Whether the *draft* model itself uses DSA compression. compress kwargs
+        # (prefill_ratio_to_sas_metadata etc.) must match the draft builder's
+        # capability, NOT the target model's: DSV4 target has compress_ratios
+        # (DSA), but an Eagle3 draft (plain Llama) does not, so its non-DSA
+        # AscendAttentionMetadataBuilder.build() cannot accept them.
+        self.draft_use_compress = (
+            draft_hf_config is not None and hasattr(draft_hf_config, "compress_ratios")
+        )
+
         # NOTE:
         # `draft_tensor_parallel_size` does not take effect for Eagle:
         # the draft model uses the same TP size as the target model in practice.
@@ -635,7 +644,7 @@ class AscendSpecDecodeBaseProposer(SpecDecodeBaseProposer):
                 for draft_index in range(self.num_speculative_tokens):
                     common_attn_metadata = self.shallow_copy_metadata(common_attn_metadata)
                     extra_attn_metadata_args: dict = {}
-                    if self.use_compress:
+                    if self.draft_use_compress:
                         extra_attn_metadata_args.update(
                             prefill_ratio_to_sas_metadata=dict(),
                             decode_ratio_to_sas_metadata=dict(),
@@ -1705,7 +1714,7 @@ class AscendSpecDecodeBaseProposer(SpecDecodeBaseProposer):
         attn_metadata_builder = attn_group.get_metadata_builder()
 
         extra_attn_metadata_args = {}
-        if self.use_compress:
+        if self.draft_use_compress:
             extra_attn_metadata_args = dict(
                 prefill_ratio_to_sas_metadata=dict(),
                 decode_ratio_to_sas_metadata=dict(),
@@ -2153,7 +2162,7 @@ class AscendSpecDecodeBaseProposer(SpecDecodeBaseProposer):
         for attn_group in self.draft_attn_groups:
             builder = attn_group.get_metadata_builder()
             extra_attn_metadata_args: dict = {}
-            if self.use_compress:
+            if self.draft_use_compress:
                 extra_attn_metadata_args = dict(
                     prefill_ratio_to_sas_metadata=dict(),
                     decode_ratio_to_sas_metadata=dict(),

@@ -25,10 +25,11 @@ import contextlib
 import tempfile
 from pathlib import Path
 
-import vllm
+from importlib.metadata import version as _pkg_version
+
 from vllm.logger import logger
 
-VLLM_VERSION = vllm.__version__
+VLLM_VERSION = _pkg_version("vllm")
 # Configuration file name
 CONFIG_FILENAME = f"service_profiling_symbols.{VLLM_VERSION}.yaml"
 MOONCAKE_CONNECTOR_MODULE = "vllm_ascend.distributed.kv_transfer.kv_p2p.mooncake_connector"

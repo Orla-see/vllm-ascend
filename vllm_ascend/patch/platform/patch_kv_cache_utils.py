@@ -209,7 +209,18 @@ def _get_kv_cache_config_deepseek_v4(
     mtp_layer_names = []
     mtp_page_size = 0
     bucketed: list[dict[int, list[str]]] = []
+    # Eagle (non-MLA draft) layers: collected per-layer for a dedicated
+    # KVCacheTensor below (FullAttentionSpec/SlidingWindowSpec page sizes are
+    # not in the MLA bucket set, so they cannot share an MLA bucket). Each
+    # contributes its own page_size_bytes to the per-block memory footprint.
+    eagle_layer_specs: list[tuple[str, int]] = []
     for group in kv_cache_groups:
+        if group.is_eagle_group:
+            assert isinstance(group.kv_cache_spec, UniformTypeKVCacheSpecs)
+            eagle_specs = group.kv_cache_spec.kv_cache_specs
+            for name in group.layer_names:
+                eagle_layer_specs.append((name, eagle_specs[name].page_size_bytes))
+            continue
         assert isinstance(group.kv_cache_spec, UniformTypeKVCacheSpecs)
         specs = group.kv_cache_spec.kv_cache_specs
         b: dict[int, list[str]] = defaultdict(list)
@@ -227,7 +238,11 @@ def _get_kv_cache_config_deepseek_v4(
     # this equals the sub-group size (each has a single page_size).
     num_layer_tuples = max(len(layers) for b in bucketed for layers in b.values()) + len(mtp_layer_names)
 
-    num_blocks = available_memory // (layer_tuple_page_bytes * num_layer_tuples)
+    eagle_total_page_bytes = sum(ps for _, ps in eagle_layer_specs)
+    total_bytes_per_block = (
+        layer_tuple_page_bytes * num_layer_tuples + eagle_total_page_bytes
+    )
+    num_blocks = available_memory // total_bytes_per_block
     num_blocks = may_override_num_blocks(vllm_config, num_blocks)
 
     kv_cache_tensors: list[KVCacheTensor] = []
@@ -241,6 +256,8 @@ def _get_kv_cache_config_deepseek_v4(
             kv_cache_tensors.append(KVCacheTensor(size=ps * num_blocks, shared_by=shared_by))
     for i in range(len(mtp_layer_names)):
         kv_cache_tensors.append(KVCacheTensor(size=mtp_page_size * num_blocks, shared_by=[mtp_layer_names[i]]))
+    for name, ps in eagle_layer_specs:
+        kv_cache_tensors.append(KVCacheTensor(size=ps * num_blocks, shared_by=[name]))
 
     return num_blocks, kv_cache_tensors
 

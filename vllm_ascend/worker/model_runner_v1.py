@@ -19,6 +19,7 @@
 
 import logging
 import math
+import os
 import sys
 import time
 from collections import defaultdict
@@ -3543,7 +3544,19 @@ class NPUModelRunner(GPUModelRunner):
             if self.drafter:
                 logger.info("Loading drafter model...")
                 if self.vllm_config.quant_config is not None:
-                    patch_load_weights(self.vllm_config)
+                    # DSV4 eagle3 drafter was trained directly on the QuaRot
+                    # verifier's already-rotated hc_head hidden states, so it is
+                    # already in rotated space; patch_draft_quarot's anti-rotation
+                    # of fc weights would corrupt them (shape mismatch crash).
+                    # Set VLLM_ASCEND_DISABLE_DRAFT_QUAROT_PATCH=1 to skip it.
+                    if os.environ.get(
+                            "VLLM_ASCEND_DISABLE_DRAFT_QUAROT_PATCH", "0") != "1":
+                        patch_load_weights(self.vllm_config)
+                    else:
+                        logger.info(
+                            "Skipping patch_draft_quarot "
+                            "(VLLM_ASCEND_DISABLE_DRAFT_QUAROT_PATCH=1): "
+                            "drafter trained in rotated space.")
                 with get_tp_context(self.drafter):
                     self.drafter.load_model(self.model)
 
@@ -3933,7 +3946,15 @@ class NPUModelRunner(GPUModelRunner):
                     for layer_name_inner in kv_cache_tensor.shared_by:
                         # shared the kvcache for all shared layers
                         kv_cache_raw_tensors[layer_name_inner] = tensor
-                elif "attn" in layer_name and self.use_compress and layer_name not in kv_cache_raw_tensors:
+                elif (
+                    "attn" in layer_name
+                    and self.use_compress
+                    and isinstance(
+                        layer_kv_cache_spec[layer_name],
+                        (AscendMLAAttentionSpec, AscendSlidingWindowMLASpec),
+                    )
+                    and layer_name not in kv_cache_raw_tensors
+                ):
                     if self.vllm_config.kv_transfer_config is None:
                         tensor = torch.zeros(kv_cache_tensor.size,
                                                 dtype=torch.int8,

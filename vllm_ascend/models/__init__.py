@@ -1,4 +1,4 @@
-from vllm import ModelRegistry
+from vllm.model_executor.models.registry import ModelRegistry
 
 
 def register_model():

@@ -146,7 +146,7 @@ class AscendStep3p5MTPProposer(AscendEagleProposer):
         per_group_attn_metadata: list[Any] = []
         multi_steps_attn_metadata: list[dict[str, Any]] = []
         extra_attn_metadata_args: dict[str, Any] = {}
-        if self.use_compress:
+        if self.draft_use_compress:
             extra_attn_metadata_args = dict(
                 prefill_ratio_to_sas_metadata=dict(),
                 decode_ratio_to_sas_metadata=dict(),
