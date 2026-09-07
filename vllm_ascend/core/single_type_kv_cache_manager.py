@@ -20,6 +20,7 @@ from vllm.v1.kv_cache_interface import (
     FullAttentionSpec,
     KVCacheSpec,
     SlidingWindowSpec,
+    UniformTypeKVCacheSpecs,
 )
 from vllm.v1.request import Request
 
@@ -321,6 +322,34 @@ def get_manager_for_kv_cache_spec(
             kwargs["max_admission_blocks_per_request"] = kv_cache_spec.max_admission_blocks_per_request(
                 max_in_flight_tokens=token_budget,
                 max_model_len=max_model_len,
+            )
+    elif isinstance(kv_cache_spec, UniformTypeKVCacheSpecs):
+        # DSv4 hybrid groups carry UniformTypeKVCacheSpecs containers (not
+        # bare SlidingWindowSpec), so the cap branch above never matches and
+        # the full-sequence admission gate reserves the whole prompt for the
+        # 8/32-token SWA state groups (16K prompt -> 2783 blocks > 1634 free
+        # -> permanent waiting). Uniform merging requires all members to share
+        # window/block size, so any member computes the same cap.
+        specs = list(kv_cache_spec.kv_cache_specs.values())
+        if (
+            specs
+            and all(isinstance(s, SlidingWindowSpec) for s in specs)
+            and max_in_flight_tokens is not None
+            and max_model_len is not None
+        ):
+            kwargs["max_admission_blocks_per_request"] = specs[0].max_admission_blocks_per_request(
+                max_in_flight_tokens=max_in_flight_tokens,
+                max_model_len=max_model_len,
+            )
+    elif isinstance(kv_cache_spec, FullAttentionSpec):
+        # DSv4 eagle3 drafter KV: the only FullAttention group in the
+        # composed model. The drafter's sliding-window adapter bounds real
+        # usage to draft_window + one prefill chunk (~max_in_flight tokens),
+        # while the full-sequence admission gate would otherwise reserve
+        # L/block_size (2049 blocks at 256K) and reject requests that fit.
+        if max_in_flight_tokens is not None:
+            kwargs["max_admission_blocks_per_request"] = (
+                cdiv(max_in_flight_tokens, kv_cache_spec.block_size) + 1
             )
     manager = manager_class(kv_cache_spec, **kwargs)
     return manager
