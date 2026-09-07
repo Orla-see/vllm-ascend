@@ -151,6 +151,21 @@ class SlidingWindowAdapter:
         common_attn_metadata,
     ) -> None:
         self.full_block_table = common_attn_metadata.block_table_tensor
+        # Prefill guard: when the largest per-request query length exceeds the
+        # sliding window, capping KV to the window would make s1 > s2 and crash
+        # the Ascend FA kernel (aclnnFlashAttentionVarLenScore error 161001
+        # "exist invalid row" / "CheckPretokenAndNexttoken failed"). This
+        # happens during drafter prefill of a long prompt (e.g. an 8K-token
+        # prompt with draft_window_size=4096): the drafter query spans the full
+        # prompt while the capped KV only holds the last W tokens, so the
+        # earliest query rows have no corresponding keys. Skip the window cap
+        # so prefill uses full causal attention (s1 == s2 == full prompt);
+        # ``full_block_table`` (set just above) still lets
+        # ``attn_update_stack_num_spec_norm`` (drafter steps 1+) compute slot
+        # mapping against the absolute, uncropped KV cache. Decode (per-request
+        # query <= window) is unaffected and still gets the windowed KV cap.
+        if common_attn_metadata.max_query_len > self.window_size:
+            return
         num_reqs = common_attn_metadata.seq_lens.shape[0]
         k_future = self._future_offset
         w = self.window_size
